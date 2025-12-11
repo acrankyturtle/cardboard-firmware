@@ -30,7 +30,7 @@ impl<'a> KeyboardState<'a> {
 				.map(|(i, vk)| VirtualKeyState::from(vk, i))
 				.collect(),
 			tags: TagList::new(),
-			running: Vec::new(),
+			running: Vec::with_capacity(8),
 			macros: &profile.macros,
 		};
 
