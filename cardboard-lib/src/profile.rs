@@ -5,7 +5,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use defmt::Format;
-use heapless::String as HeaplessString;
 use num_enum::TryFromPrimitive;
 use uuid::Uuid;
 
@@ -13,9 +12,6 @@ use crate::input::KeyId;
 use crate::serialize::Readable;
 use crate::state::TagList;
 use crate::stream::{ReadAsync, ReadAsyncExt};
-
-/// Maximum length for a layer tag name.
-pub const MAX_LAYER_TAG_LEN: usize = 32;
 
 const VERSION: u32 = 1;
 
@@ -286,7 +282,7 @@ impl Readable for Action {
 	}
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum ActionEvent {
 	None,
 	Keyboard(KeyboardEvent),
@@ -421,32 +417,13 @@ impl Readable for Channel {
 	}
 }
 
-/// A layer tag identifier using stack-allocated string.
-///
-/// Layer tags are used to conditionally activate layers based on matching tags.
-/// Uses heapless::String to avoid heap allocations for better embedded performance.
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct LayerTag(HeaplessString<MAX_LAYER_TAG_LEN>);
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Clone))]
+pub struct LayerTag(String);
 
 impl LayerTag {
-	/// Create a new LayerTag from a heapless string.
-	pub fn new(tag: HeaplessString<MAX_LAYER_TAG_LEN>) -> Self {
+	pub fn new(tag: String) -> Self {
 		LayerTag(tag)
-	}
-
-	/// Create a new LayerTag from a string slice.
-	/// Truncates if the string exceeds MAX_LAYER_TAG_LEN.
-	pub fn from_str(s: &str) -> Self {
-		let mut tag = HeaplessString::new();
-		// Truncate to max length if needed
-		let len = s.len().min(MAX_LAYER_TAG_LEN);
-		let _ = tag.push_str(&s[..len]);
-		LayerTag(tag)
-	}
-
-	/// Get the tag as a string slice.
-	pub fn as_str(&self) -> &str {
-		self.0.as_str()
 	}
 }
 
@@ -455,11 +432,10 @@ impl Readable for LayerTag {
 	where
 		Self: Sized,
 	{
-		let str = match reader.read_string_u8().await {
-			Some(s) => s,
-			None => return Err("Failed to read LayerTag"),
-		};
-		Ok(LayerTag::from_str(&str))
+		match reader.read_string_u8().await {
+			Some(s) => Ok(LayerTag::new(s)),
+			None => Err("Failed to read LayerTag"),
+		}
 	}
 }
 
@@ -756,7 +732,7 @@ impl Readable for ConsumerControlEvent {
 	}
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum LayerEvent {
 	Clear(LayerTag),
 	Set(LayerTag),

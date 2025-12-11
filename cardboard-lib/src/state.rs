@@ -14,7 +14,7 @@ use fugit::ExtU64;
 pub struct KeyboardState<'a> {
 	keys: Vec<PhysicalKeyState<'a>>,
 	virtual_keys: Vec<VirtualKeyState<'a>>,
-	tags: TagList,
+	tags: TagList<'a>,
 	running: Vec<MacroState<'a>>,
 	macros: &'a Vec<Macro>,
 }
@@ -113,32 +113,30 @@ impl<'a> KeyboardState<'a> {
 		running.extend(macros);
 	}
 
-	pub fn tick(&mut self, elapsed: Duration, events: &mut Vec<ActionEvent>) {
-		let mut event_refs = Vec::new();
-
+	pub fn tick(&mut self, elapsed: Duration, mut on_event: impl FnMut(&'a ActionEvent)) {
 		for macro_ in self.running.iter_mut() {
-			macro_.tick(elapsed, &mut event_refs);
+			macro_.tick(elapsed, &mut on_event);
 		}
 
 		self.running.retain(|macro_| !macro_.is_finished());
-
-		for event in event_refs {
-			events.push(event.clone());
-		}
 	}
 
-	pub fn add_internal_tag(&mut self, tag: LayerTag) {
+	pub fn add_internal_tag(&mut self, tag: &'a LayerTag) {
 		self.tags.add_internal(tag);
 		self.update_layers();
 	}
 
-	pub fn remove_internal_tag(&mut self, tag: LayerTag) {
+	pub fn remove_internal_tag(&mut self, tag: &'a LayerTag) {
 		self.tags.remove_internal(tag);
 		self.update_layers();
 	}
 
 	pub fn get_external_tags(&self) -> &[LayerTag] {
 		&self.tags.external
+	}
+
+	pub fn to_external_tags(self) -> Vec<LayerTag> {
+		self.tags.external
 	}
 
 	pub fn set_external_tags(&mut self, tags: Vec<LayerTag>) {
@@ -301,13 +299,17 @@ impl<'a> MacroState<'a> {
 		}
 	}
 
-	pub fn tick(&mut self, mut elapsed: Duration, events: &mut Vec<&'a ActionEvent>) -> Duration {
+	pub fn tick(
+		&mut self,
+		mut elapsed: Duration,
+		on_event: &mut impl FnMut(&'a ActionEvent),
+	) -> Duration {
 		while !self.is_finished() && !elapsed.is_zero() {
 			if let CurrentSequence::Start(ref mut seq)
 			| CurrentSequence::Loop(ref mut seq)
 			| CurrentSequence::End(ref mut seq) = self.current_sequence
 			{
-				elapsed = seq.tick(elapsed, events);
+				elapsed = seq.tick(elapsed, on_event);
 
 				if seq.is_finished() {
 					self.move_to_next_seq(elapsed);
@@ -384,12 +386,16 @@ impl<'a> SequenceState<'a> {
 		}
 	}
 
-	pub fn tick(&mut self, elapsed: Duration, events: &mut Vec<&'a ActionEvent>) -> Duration {
+	pub fn tick(
+		&mut self,
+		elapsed: Duration,
+		on_event: &mut impl FnMut(&'a ActionEvent),
+	) -> Duration {
 		self.elapsed += elapsed;
 
 		while let Some(action) = self.pending.pop() {
 			if action.predelay_ms <= self.elapsed.to_millis() {
-				events.push(&action.action_event);
+				on_event(&action.action_event);
 				self.elapsed -= action.predelay_ms.millis();
 			} else {
 				self.pending.push(action);
@@ -429,12 +435,12 @@ enum TriggerState {
 	Stopping,
 }
 
-pub struct TagList {
-	pub(crate) internal: Vec<LayerTag>,
+pub struct TagList<'a> {
+	pub(crate) internal: Vec<&'a LayerTag>,
 	pub(crate) external: Vec<LayerTag>,
 }
 
-impl TagList {
+impl<'a> TagList<'a> {
 	pub fn new() -> Self {
 		TagList {
 			internal: Vec::new(),
@@ -442,11 +448,11 @@ impl TagList {
 		}
 	}
 
-	pub fn add_internal(&mut self, tag: LayerTag) {
+	pub fn add_internal(&mut self, tag: &'a LayerTag) {
 		self.internal.push(tag);
 	}
 
-	pub fn remove_internal(&mut self, tag: LayerTag) {
+	pub fn remove_internal(&mut self, tag: &'a LayerTag) {
 		if let Some(index) = self.internal.iter().position(|t| *t == tag) {
 			self.internal.remove(index);
 		}
@@ -470,6 +476,7 @@ impl TagList {
 	fn contains(&self, value: &LayerTag) -> bool {
 		self.internal
 			.iter()
+			.copied()
 			.chain(self.external.iter())
 			.any(|tag| *tag == *value)
 	}
@@ -521,13 +528,13 @@ mod tests {
 		let mut state = SequenceState::from(&sequence, 0.millis());
 		assert_eq!(state.elapsed, 0.millis() as Duration);
 
-		state.tick(50.millis() as Duration, &mut vec![]);
+		state.tick(50.millis() as Duration, &mut |_| {});
 		assert_eq!(state.elapsed, 50.millis() as Duration);
 
-		state.tick(100.millis() as Duration, &mut vec![]);
+		state.tick(100.millis() as Duration, &mut |_| {});
 		assert_eq!(state.elapsed, 150.millis() as Duration);
 
-		state.tick(200.millis() as Duration, &mut vec![]);
+		state.tick(200.millis() as Duration, &mut |_| {});
 		assert_eq!(state.elapsed, 350.millis() as Duration);
 	}
 
@@ -543,16 +550,16 @@ mod tests {
 		let mut state = SequenceState::from(&sequence, 0.millis());
 		assert_eq!(state.pending.len(), 1);
 
-		state.tick(100.millis(), &mut vec![]);
+		state.tick(100.millis(), &mut |_| {});
 		assert_eq!(state.pending.len(), 1);
 
-		state.tick(100.millis(), &mut vec![]);
+		state.tick(100.millis(), &mut |_| {});
 		assert_eq!(state.pending.len(), 1);
 
-		state.tick(200.millis(), &mut vec![]);
+		state.tick(200.millis(), &mut |_| {});
 		assert_eq!(state.pending.len(), 1);
 
-		state.tick(599.millis(), &mut vec![]);
+		state.tick(599.millis(), &mut |_| {});
 		assert_eq!(state.pending.len(), 1);
 	}
 
@@ -574,10 +581,10 @@ mod tests {
 		let mut state = SequenceState::from(&sequence, 0.millis());
 		assert_eq!(state.pending.len(), 2);
 
-		state.tick(99.millis(), &mut vec![]);
+		state.tick(99.millis(), &mut |_| {});
 		assert_eq!(state.pending.len(), 2);
 
-		state.tick(1.millis(), &mut vec![]);
+		state.tick(1.millis(), &mut |_| {});
 		assert_eq!(state.pending.len(), 1);
 	}
 
@@ -599,10 +606,10 @@ mod tests {
 		let mut state = SequenceState::from(&sequence, 0.millis());
 		assert_eq!(state.is_finished(), false);
 
-		state.tick(299.millis(), &mut vec![]);
+		state.tick(299.millis(), &mut |_| {});
 		assert_eq!(state.is_finished(), false);
 
-		state.tick(1.millis(), &mut vec![]);
+		state.tick(1.millis(), &mut |_| {});
 		assert_eq!(state.is_finished(), true);
 	}
 
@@ -618,7 +625,7 @@ mod tests {
 		let mut state = SequenceState::from(&sequence, 0.millis());
 		assert_eq!(state.pending.len(), 1);
 
-		state.tick(0.millis(), &mut vec![]);
+		state.tick(0.millis(), &mut |_| {});
 		assert_eq!(state.pending.len(), 0);
 	}
 
@@ -644,7 +651,7 @@ mod tests {
 		let mut state = SequenceState::from(&sequence, 0.millis());
 		assert_eq!(state.pending.len(), 3);
 
-		state.tick(400.millis(), &mut vec![]);
+		state.tick(400.millis(), &mut |_| {});
 		assert_eq!(state.pending.len(), 0);
 	}
 
@@ -670,7 +677,7 @@ mod tests {
 		let mut state = SequenceState::from(&sequence, 0.millis());
 		let mut events = vec![];
 
-		state.tick(400.millis(), &mut events);
+		state.tick(400.millis(), &mut |e| events.push(e));
 		assert_eq!(events.len(), 3);
 
 		assert!(matches!(
@@ -700,7 +707,7 @@ mod tests {
 			CurrentSequence::Start(_)
 		));
 
-		macro_state.tick(100.millis(), &mut vec![]);
+		macro_state.tick(100.millis(), &mut |_| {});
 		assert!(matches!(
 			macro_state.current_sequence,
 			CurrentSequence::Loop(_)
@@ -715,13 +722,13 @@ mod tests {
 		let key_state = PhysicalKeyState::from(&device_key);
 		let mut macro_state = MacroState::from(&_macro, &key_state);
 
-		macro_state.tick(100.millis(), &mut vec![]);
+		macro_state.tick(100.millis(), &mut |_| {});
 		assert!(matches!(
 			macro_state.current_sequence,
 			CurrentSequence::Loop(_)
 		));
 
-		macro_state.tick(200.millis(), &mut vec![]);
+		macro_state.tick(200.millis(), &mut |_| {});
 		assert!(matches!(
 			macro_state.current_sequence,
 			CurrentSequence::Loop(_)
@@ -754,13 +761,13 @@ mod tests {
 		let key_state = PhysicalKeyState::from(&device_key);
 		let mut macro_state = MacroState::from(&_macro, &key_state);
 
-		macro_state.tick(100.millis(), &mut vec![]);
+		macro_state.tick(100.millis(), &mut |_| {});
 		assert!(matches!(
 			macro_state.current_sequence,
 			CurrentSequence::Loop(_)
 		));
 
-		macro_state.tick(300.millis(), &mut vec![]);
+		macro_state.tick(300.millis(), &mut |_| {});
 		assert!(matches!(
 			macro_state.current_sequence,
 			CurrentSequence::Loop(_)
@@ -775,7 +782,7 @@ mod tests {
 		let key_state = PhysicalKeyState::from(&device_key);
 		let mut macro_state = MacroState::from(&_macro, &key_state);
 
-		macro_state.tick(100.millis(), &mut vec![]);
+		macro_state.tick(100.millis(), &mut |_| {});
 		assert!(matches!(
 			macro_state.current_sequence,
 			CurrentSequence::Loop(_)
@@ -783,7 +790,7 @@ mod tests {
 
 		macro_state.stop();
 
-		macro_state.tick(200.millis(), &mut vec![]);
+		macro_state.tick(200.millis(), &mut |_| {});
 		assert!(matches!(
 			macro_state.current_sequence,
 			CurrentSequence::End(_)
@@ -798,7 +805,7 @@ mod tests {
 		let key_state = PhysicalKeyState::from(&device_key);
 		let mut macro_state = MacroState::from(&_macro, &key_state);
 
-		macro_state.tick(100.millis(), &mut vec![]);
+		macro_state.tick(100.millis(), &mut |_| {});
 		assert!(matches!(
 			macro_state.current_sequence,
 			CurrentSequence::Loop(_)
@@ -806,13 +813,13 @@ mod tests {
 
 		macro_state.stop();
 
-		macro_state.tick(200.millis(), &mut vec![]);
+		macro_state.tick(200.millis(), &mut |_| {});
 		assert!(matches!(
 			macro_state.current_sequence,
 			CurrentSequence::End(_)
 		));
 
-		macro_state.tick(300.millis(), &mut vec![]);
+		macro_state.tick(300.millis(), &mut |_| {});
 		assert!(matches!(
 			macro_state.current_sequence,
 			CurrentSequence::Finished
@@ -829,7 +836,7 @@ mod tests {
 
 		macro_state.stop();
 
-		macro_state.tick(100.millis(), &mut vec![]);
+		macro_state.tick(100.millis(), &mut |_| {});
 		assert!(matches!(
 			macro_state.current_sequence,
 			CurrentSequence::End(_)
@@ -868,13 +875,13 @@ mod tests {
 			CurrentSequence::Start(_)
 		));
 
-		state.tick(100.millis(), &mut vec![]);
+		state.tick(100.millis(), |_| {});
 		assert!(matches!(
 			state.running[0].current_sequence,
 			CurrentSequence::Loop(_)
 		));
 
-		state.tick(200.millis(), &mut vec![]);
+		state.tick(200.millis(), |_| {});
 		assert!(matches!(
 			state.running[0].current_sequence,
 			CurrentSequence::Loop(_)
@@ -893,7 +900,7 @@ mod tests {
 		state.press_key(KEY_ID);
 		state.release_key(KEY_ID);
 
-		state.tick(100.millis(), &mut vec![]);
+		state.tick(100.millis(), |_| {});
 		assert!(matches!(
 			state.running[0].current_sequence,
 			CurrentSequence::End(_)
@@ -915,7 +922,7 @@ mod tests {
 		state.press_key(KEY_ID);
 		assert_eq!(state.running.len(), 2);
 
-		state.tick(100.millis(), &mut vec![]);
+		state.tick(100.millis(), |_| {});
 
 		assert!(matches!(
 			state.running[0].current_sequence,
@@ -946,7 +953,7 @@ mod tests {
 		state.press_key(key_2);
 		assert_eq!(state.running.len(), 2);
 
-		state.tick(100.millis(), &mut vec![]);
+		state.tick(100.millis(), |_| {});
 
 		assert!(matches!(
 			state.running[0].current_sequence,
@@ -992,6 +999,7 @@ mod tests {
 
 		let macros = vec![expected_macro, other_macro];
 
+		let tag = LayerTag::new("".to_string());
 		let device_key = DeviceKey {
 			id: KEY_ID,
 			layers: DeviceLayers {
@@ -1000,7 +1008,7 @@ mod tests {
 						id: LAYER_ID2,
 						macros: vec![MacroIndex::new(0)],
 					},
-					tags: vec![LayerTag::from_str("test")],
+					tags: vec![tag.clone()],
 					match_type: TagMatchType::All,
 				}],
 				default_layer: DeviceKeyLayer {
@@ -1013,7 +1021,7 @@ mod tests {
 		let profile = new_test_profile(vec![device_key], macros);
 		let mut state = KeyboardState::from(&profile);
 
-		state.add_internal_tag(LayerTag::from_str("test"));
+		state.add_internal_tag(&tag);
 
 		state.press_key(KEY_ID);
 
@@ -1029,6 +1037,7 @@ mod tests {
 		let other_macro = new_test_macro(other_macro_id, Some(CHANNEL_ID), vec![CHANNEL_ID]);
 		let macros = vec![expected_macro, other_macro];
 
+		let tag = LayerTag::new("".to_string());
 		let device_key = DeviceKey {
 			id: KEY_ID,
 			layers: DeviceLayers {
@@ -1037,7 +1046,7 @@ mod tests {
 						id: LAYER_ID2,
 						macros: vec![MacroIndex::new(0)],
 					},
-					tags: vec![LayerTag::from_str("test")],
+					tags: vec![tag.clone()],
 					match_type: TagMatchType::All,
 				}],
 				default_layer: DeviceKeyLayer {
@@ -1050,7 +1059,7 @@ mod tests {
 		let profile = new_test_profile(vec![device_key], macros);
 		let mut state = KeyboardState::from(&profile);
 
-		state.set_external_tags(vec![LayerTag::from_str("test")]);
+		state.set_external_tags(vec![tag.clone()]);
 
 		state.press_key(KEY_ID);
 
@@ -1066,6 +1075,7 @@ mod tests {
 		let other_macro = new_test_macro(other_macro_id, Some(CHANNEL_ID), vec![CHANNEL_ID]);
 		let macros = vec![expected_macro, other_macro];
 
+		let tag = LayerTag::new("".to_string());
 		let device_key = DeviceKey {
 			id: KEY_ID,
 			layers: DeviceLayers {
@@ -1074,7 +1084,7 @@ mod tests {
 						id: LAYER_ID2,
 						macros: vec![MacroIndex::new(1)],
 					},
-					tags: vec![LayerTag::from_str("test")],
+					tags: vec![tag],
 					match_type: TagMatchType::All,
 				}],
 				default_layer: DeviceKeyLayer {
@@ -1094,43 +1104,38 @@ mod tests {
 
 	#[test]
 	fn layers_with_empty_tags_never_match_for_any() {
+		let tag = LayerTag::new("".to_string());
 		let tag_list = TagList {
 			internal: vec![],
 			external: vec![],
 		};
 
-		assert_eq!(
-			tag_list.matches(&[LayerTag::from_str("")], &TagMatchType::Any),
-			false
-		);
+		assert_eq!(tag_list.matches(&[tag], &TagMatchType::Any), false);
 	}
 
 	#[test]
 	fn layers_with_empty_tags_never_match_for_all() {
+		let tag = LayerTag::new("".to_string());
 		let tag_list = TagList {
 			internal: vec![],
 			external: vec![],
 		};
 
-		assert_eq!(
-			tag_list.matches(&[LayerTag::from_str("")], &TagMatchType::All),
-			false
-		);
+		assert_eq!(tag_list.matches(&[tag], &TagMatchType::All), false);
 	}
 
 	#[test]
 	fn internal_tag_is_still_set_when_setting_tag_twice_and_clearing_once() {
+		let tag1 = LayerTag::new("tag1".to_string());
+
 		let mut tag_list = TagList::new();
 
-		tag_list.add_internal(LayerTag::from_str("tag1"));
-		tag_list.add_internal(LayerTag::from_str("tag1"));
+		tag_list.add_internal(&tag1);
+		tag_list.add_internal(&tag1);
 
-		tag_list.remove_internal(LayerTag::from_str("tag1"));
+		tag_list.remove_internal(&tag1);
 
-		assert_eq!(
-			tag_list.matches(&[LayerTag::from_str("tag1")], &TagMatchType::All),
-			true
-		);
+		assert_eq!(tag_list.matches(&[tag1.clone()], &TagMatchType::All), true);
 	}
 
 	// ------- HELPERS --------

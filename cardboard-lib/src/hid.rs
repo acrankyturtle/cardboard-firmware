@@ -10,9 +10,9 @@ pub struct HidReport<const SIZE_K: usize, const SIZE_M: usize, const SIZE_C: usi
 }
 
 pub trait ReportHid {
-	fn report_keyboard(&mut self, report: KeyboardEvent);
-	fn report_mouse(&mut self, report: MouseEvent);
-	fn report_consumer(&mut self, report: ConsumerControlEvent);
+	fn report_keyboard(&mut self, report: &KeyboardEvent);
+	fn report_mouse(&mut self, report: &MouseEvent);
+	fn report_consumer(&mut self, report: &ConsumerControlEvent);
 	fn flush(&mut self);
 	fn reset(&mut self);
 }
@@ -32,7 +32,7 @@ pub trait HidConsumerControl {
 pub trait HidDevice<I> {
 	fn create_report(&mut self) -> Option<[u8; Self::SIZE]>;
 
-	fn input(&mut self, input: I);
+	fn input(&mut self, input: &I);
 
 	fn reset(&mut self);
 
@@ -60,13 +60,13 @@ impl HidDevice<KeyboardEvent> for NKROKeyboard {
 		Some(report)
 	}
 
-	fn input(&mut self, input: KeyboardEvent) {
+	fn input(&mut self, input: &KeyboardEvent) {
 		let (key, state) = match input {
 			KeyboardEvent::KeyDown(k) => (k, KeyState::Pressed),
 			KeyboardEvent::KeyUp(k) => (k, KeyState::Released),
 		};
 
-		let keycode = key as u8;
+		let keycode = *key as u8;
 
 		if (0xE0..=0xE7).contains(&keycode) {
 			let modifiers: u8 = match key {
@@ -199,7 +199,7 @@ impl HidDevice<MouseEvent> for Mouse {
 		Some([buttons, x as u8, y as u8, scroll_x as u8, scroll_y as u8])
 	}
 
-	fn input(&mut self, input: MouseEvent) {
+	fn input(&mut self, input: &MouseEvent) {
 		match input {
 			MouseEvent::ButtonDown(button) => self.button_down(map_button(&button)),
 			MouseEvent::ButtonUp(button) => self.button_up(map_button(&button)),
@@ -302,7 +302,7 @@ impl HidDevice<MouseEvent> for Scroll {
 		Some([buttons, scroll_x as u8, scroll_y as u8])
 	}
 
-	fn input(&mut self, input: MouseEvent) {
+	fn input(&mut self, input: &MouseEvent) {
 		match input {
 			MouseEvent::ButtonDown(button) => self.button_down(map_button(&button)),
 			MouseEvent::ButtonUp(button) => self.button_up(map_button(&button)),
@@ -407,7 +407,7 @@ impl HidDevice<ConsumerControlEvent> for ConsumerControl {
 		}
 	}
 
-	fn input(&mut self, input: ConsumerControlEvent) {
+	fn input(&mut self, input: &ConsumerControlEvent) {
 		let state = self.get_state_or_new();
 
 		let cc = map_cc(&input);

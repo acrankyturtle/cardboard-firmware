@@ -42,7 +42,6 @@ pub async fn keypad_task<
 	let mut state = KeyboardState::from(&profile);
 
 	let mut key_actions = Vec::with_capacity(Matrix::SIZE);
-	let mut macro_events = Vec::with_capacity(16);
 
 	let mut previous_tick = clock.now();
 
@@ -59,7 +58,7 @@ pub async fn keypad_task<
 		// check for profile change
 		if let Some(new_profile) = profile_changed.try_get_changed_profile() {
 			// hang onto the old external tags to apply them to the new profile
-			let old_external_tags = state.get_external_tags().to_vec();
+			let old_external_tags = state.to_external_tags();
 			profile = new_profile;
 			state = KeyboardState::from(&profile);
 			state.set_external_tags(old_external_tags);
@@ -99,28 +98,30 @@ pub async fn keypad_task<
 			}
 		}
 
-		// tick macros
-		macro_events.clear();
-		state.tick(dt, &mut macro_events);
-
-		// process each macro event and update hid statess
-		for macro_event in macro_events.drain(..) {
-			match macro_event {
-				ActionEvent::DebugAction(event) => match event {
-					DebugEvent::Log(msg) => {
-						info!("Debug event: {:?}", msg.as_str())
-					}
-				},
-				ActionEvent::None => {}
-				ActionEvent::Keyboard(event) => hid.report_keyboard(event),
-				ActionEvent::Mouse(event) => hid.report_mouse(event),
-				ActionEvent::ConsumerControl(event) => {
-					hid.report_consumer(event);
+		// tick macros and process events
+		let mut layer_events: Vec<&LayerEvent> = Vec::new();
+		state.tick(dt, |event| match event {
+			ActionEvent::DebugAction(event) => match event {
+				DebugEvent::Log(msg) => {
+					info!("Debug event: {:?}", msg.as_str())
 				}
-				ActionEvent::Layer(event) => match event {
-					LayerEvent::Clear(layer) => state.remove_internal_tag(layer),
-					LayerEvent::Set(layer) => state.add_internal_tag(layer),
-				},
+			},
+			ActionEvent::None => {}
+			ActionEvent::Keyboard(event) => hid.report_keyboard(event),
+			ActionEvent::Mouse(event) => hid.report_mouse(event),
+			ActionEvent::ConsumerControl(event) => {
+				hid.report_consumer(event);
+			}
+			ActionEvent::Layer(event) => {
+				layer_events.push(event);
+			}
+		});
+
+		// process layer events after tick completes (can't borrow state during tick)
+		for event in layer_events {
+			match event {
+				LayerEvent::Clear(layer) => state.remove_internal_tag(layer),
+				LayerEvent::Set(layer) => state.add_internal_tag(layer),
 			}
 		}
 

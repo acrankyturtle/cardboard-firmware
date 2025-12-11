@@ -298,15 +298,15 @@ where
 	[(); HidMouse::SIZE]:,
 	[(); HidConsumer::SIZE]:,
 {
-	fn report_keyboard(&mut self, report: crate::profile::KeyboardEvent) {
+	fn report_keyboard(&mut self, report: &crate::profile::KeyboardEvent) {
 		self.keyboard.input(report);
 	}
 
-	fn report_mouse(&mut self, report: crate::profile::MouseEvent) {
+	fn report_mouse(&mut self, report: &crate::profile::MouseEvent) {
 		self.mouse.input(report);
 	}
 
-	fn report_consumer(&mut self, report: crate::profile::ConsumerControlEvent) {
+	fn report_consumer(&mut self, report: &crate::profile::ConsumerControlEvent) {
 		self.consumer.input(report);
 	}
 
